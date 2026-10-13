@@ -1,0 +1,30 @@
+# =============================================================================
+#  packages/wallbox_puissance_reseau.yaml : envoyer la puissance réseau au module
+#  Send the grid power to the DomBusEVSE (Modbus register 11) in Solar / Managed
+#  mode, when no dedicated meter is wired to the module.
+#
+#  sensor.grid_power : puissance échangée avec le réseau, en W, positive quand
+#  on achète, négative quand on injecte (ici : mesure du routeur MSunPV).
+#  Adapter « hub » et « slave » à votre configuration Modbus.
+#  Valeur négative encodée en complément à deux, comme l'attend le module.
+# =============================================================================
+automation:
+  - id: wallbox_write_gridpower_managed
+    alias: "Wallbox - Écriture puissance réseau (modes Piloté/Solaire)"
+    mode: single
+    triggers:
+      - trigger: state
+        entity_id: sensor.grid_power
+    conditions:
+      - condition: state
+        entity_id: input_select.evmodename
+        state: ["Piloté", "Solaire"]
+    actions:
+      - variables:
+          puissance_reseau: "{{ states('sensor.grid_power') | float(0) | round(0) | int }}"
+      - action: modbus.write_register
+        data:
+          hub: dombus1
+          slave: 227
+          address: 11
+          value: "{{ (65536 + puissance_reseau) if puissance_reseau < 0 else puissance_reseau }}"

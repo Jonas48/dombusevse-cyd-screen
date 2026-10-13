@@ -1,0 +1,102 @@
+# =============================================================================
+#  packages/wallbox_solaire_defaut.yaml : le mode Solaire comme état de repos
+#  AJOUTÉ le 03/10.
+#
+#  Dès que la wallbox passe en "Arrêt" alors que la voiture est branchée
+#  (bouton Arrêt, fin des heures creuses à 6h30, fin d'une charge éco,
+#  annulation d'un forçage...), elle repasse en "Solaire" cinq minutes plus
+#  tard : la recharge sur surplus solaire reste toujours prête.
+#  Pour garder la voiture branchée SANS aucune charge, activer l'interrupteur
+#  "Wallbox : bloquer le retour en Solaire".
+# =============================================================================
+
+input_boolean:
+  wallbox_bloquer_retour_solaire:
+    name: "Wallbox : bloquer le retour en Solaire"
+    icon: mdi:solar-power-variant-outline
+
+automation:
+  - id: wallbox_retour_mode_solaire
+    alias: "Wallbox – retour automatique en mode Solaire"
+    mode: restart
+    triggers:
+      # MODIFIÉ le 08/10 : 5 minutes au lieu d'1, pour laisser le temps de
+      # débrancher la voiture après un STOP avant que le Solaire ne relance
+      # une charge (et ne reverrouille le connecteur).
+      - trigger: state
+        entity_id: input_select.evmodename
+        to: "Arrêt"
+        for:
+          minutes: 5
+      # La voiture vient d'être branchée alors que la wallbox est en Arrêt
+      - trigger: state
+        entity_id: binary_sensor.car_plugged_in
+        to: "on"
+        for:
+          minutes: 1
+      # Au démarrage de HA et au rechargement des automatisations : remet en
+      # Solaire si la wallbox est restée en Arrêt (sinon rien ne la réveille)
+      - trigger: homeassistant
+        event: start
+      - trigger: event
+        event_type: automation_reloaded
+      # On débloque l'interrupteur : retour en Solaire sans attendre
+      - trigger: state
+        entity_id: input_boolean.wallbox_bloquer_retour_solaire
+        to: "off"
+    conditions:
+      - condition: state
+        entity_id: input_select.evmodename
+        state: "Arrêt"
+      - condition: state
+        entity_id: input_boolean.wallbox_bloquer_retour_solaire
+        state: "off"
+      - condition: state
+        entity_id: binary_sensor.car_plugged_in
+        state: "on"
+      # Pas pendant une recharge HC programmée (elle démarre à 22h30)
+      - condition: state
+        entity_id: input_boolean.demande_recharge_hc
+        state: "off"
+    actions:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.evmodename
+        data:
+          option: "Solaire"
+      - action: input_button.press
+        target:
+          entity_id: input_button.evmodeset
+
+  # AJOUTÉ le 05/10 : Solaire par défaut après chaque redémarrage de HA, que
+  # la voiture soit branchée ou non (sans voiture, le mode Solaire ne fait
+  # rien). On attend 90 s que la liaison Modbus ait relu le vrai mode de la
+  # wallbox. Seul un STOP volontaire (blocage) ou une recharge HC programmée
+  # laisse la wallbox en Arrêt.
+  - id: wallbox_solaire_au_demarrage
+    alias: "Wallbox – Solaire par défaut au démarrage de HA"
+    mode: single
+    triggers:
+      - trigger: homeassistant
+        event: start
+    actions:
+      - delay: "00:01:30"
+      - condition: template
+        value_template: "{{ is_number(states('sensor.evse_mode_raw')) }}"
+      - condition: state
+        entity_id: input_select.evmodename
+        state: "Arrêt"
+      - condition: state
+        entity_id: input_boolean.wallbox_bloquer_retour_solaire
+        state: "off"
+      - condition: state
+        entity_id: input_boolean.demande_recharge_hc
+        state: "off"
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.evmodename
+        data:
+          option: "Solaire"
+      - action: input_button.press
+        target:
+          entity_id: input_button.evmodeset

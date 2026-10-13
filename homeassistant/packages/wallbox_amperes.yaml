@@ -1,0 +1,88 @@
+# =============================================================================
+#  packages/wallbox_amperes.yaml : forçage de la recharge en ampères
+#  AJOUTÉ le 03/10. Remplace les boutons 25/50/75/100 % (pourcentages de la
+#  puissance max réseau, 25 % = 750 W était sous le minimum de 6 A).
+#
+#  Chaque bouton règle le courant max de la wallbox (EVMaxCurrent, registre
+#  9001, écrit par l'automatisation "Wallbox - Écriture EVMaxCurrent") puis
+#  lance la charge en mode 100 %. Le courant max est remis à 13 A dès que la
+#  wallbox repasse en Arrêt ou Solaire, que la voiture est débranchée, ou
+#  qu'une recharge HC est demandée, pour ne jamais brider les autres modes.
+# =============================================================================
+
+script:
+  wallbox_charge_amperes:
+    alias: "Wallbox - Charge à X ampères"
+    mode: restart
+    fields:
+      courant:
+        description: "Courant de charge en ampères (6 à 12)"
+        example: 8
+    sequence:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.evmaxcurrent
+        data:
+          value: "{{ [[courant | int(6), 6] | max, 12] | min }}"
+      - delay: "00:00:02"
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.evmodename
+        data:
+          option: "100%"
+      - action: input_button.press
+        target:
+          entity_id: input_button.evmodeset
+
+  wallbox_charge_6a:
+    alias: "Wallbox - Charge 6 A"
+    icon: mdi:battery-charging-low
+    sequence:
+      - action: script.wallbox_charge_amperes
+        data: {courant: 6}
+  wallbox_charge_8a:
+    alias: "Wallbox - Charge 8 A"
+    icon: mdi:battery-charging-medium
+    sequence:
+      - action: script.wallbox_charge_amperes
+        data: {courant: 8}
+  wallbox_charge_10a:
+    alias: "Wallbox - Charge 10 A"
+    icon: mdi:battery-charging-high
+    sequence:
+      - action: script.wallbox_charge_amperes
+        data: {courant: 10}
+  wallbox_charge_12a:
+    alias: "Wallbox - Charge 12 A"
+    icon: mdi:battery-charging-100
+    sequence:
+      - action: script.wallbox_charge_amperes
+        data: {courant: 12}
+
+automation:
+  - id: wallbox_reset_courant_max
+    alias: "Wallbox – remise du courant max à 13 A"
+    mode: queued
+    triggers:
+      - trigger: state
+        entity_id: input_select.evmodename
+        to:
+          - "Arrêt"
+          - "Solaire"
+          - "Piloté"
+      - trigger: state
+        entity_id: binary_sensor.car_plugged_in
+        to: "off"
+      - trigger: state
+        entity_id: input_boolean.demande_recharge_hc
+        to: "on"
+    conditions:
+      - condition: numeric_state
+        entity_id: input_number.evmaxcurrent
+        below: 13
+    actions:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.evmaxcurrent
+        data:
+          value: 13

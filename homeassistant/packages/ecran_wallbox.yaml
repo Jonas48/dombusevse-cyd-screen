@@ -1,0 +1,102 @@
+# =============================================================================
+#  packages/ecran_wallbox.yaml : actions des 4 boutons de l'écran CYD
+#  AJOUTÉ le 03/10. L'écran (ESPHome "ecran-wallbox") n'a aucune logique :
+#  il appelle ces scripts. Ils sont aussi utilisables depuis le tableau de bord.
+# =============================================================================
+script:
+  # STOP : arrêt immédiat de la charge en cours (forçage, HC, charge éco...).
+  # MODIFIÉ le 08/10 : ne bloque plus le retour automatique en Solaire. Une
+  # minute après, la wallbox repasse en Solaire (wallbox_solaire_defaut.yaml) :
+  # le moindre surplus solaire relancera une charge gratuite.
+  # Pour garder la voiture branchée SANS aucune charge (vacances...), activer
+  # à la main l'interrupteur « Wallbox : bloquer le retour en Solaire ».
+  wallbox_stop:
+    alias: "Wallbox - STOP (arrêt, puis retour en Solaire)"
+    icon: mdi:stop-circle
+    sequence:
+      - action: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.demande_recharge_hc
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.evmodename
+        data:
+          option: "Arrêt"
+      - action: input_button.press
+        target:
+          entity_id: input_button.evmodeset
+
+  # SOLAIRE : recharge uniquement sur surplus solaire.
+  wallbox_mode_solaire:
+    alias: "Wallbox - Mode Solaire"
+    icon: mdi:solar-power
+    sequence:
+      - action: input_boolean.turn_off
+        target:
+          entity_id:
+            - input_boolean.wallbox_bloquer_retour_solaire
+            - input_boolean.demande_recharge_hc
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.evmodename
+        data:
+          option: "Solaire"
+      - action: input_button.press
+        target:
+          entity_id: input_button.evmodeset
+
+  # HC NUIT : programme (ou annule, si déjà programmée) la recharge en heures
+  # creuses. La journée, la wallbox reste en Solaire en attendant 22h30.
+  wallbox_basculer_hc:
+    alias: "Wallbox - Programmer / annuler recharge HC"
+    icon: mdi:weather-night
+    sequence:
+      - if:
+          - condition: state
+            entity_id: input_boolean.demande_recharge_hc
+            state: "on"
+        then:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.demande_recharge_hc
+        else:
+          - action: input_boolean.turn_off
+            target:
+              entity_id: input_boolean.wallbox_bloquer_retour_solaire
+          - action: input_boolean.turn_on
+            target:
+              entity_id: input_boolean.demande_recharge_hc
+
+  # FORCER : chaque appui passe au courant suivant 6 -> 8 -> 10 -> 12 -> 6 A.
+  wallbox_forcer_suivant:
+    alias: "Wallbox - Forçage (courant suivant)"
+    icon: mdi:flash
+    sequence:
+      - variables:
+          actuel: "{{ states('input_number.evmaxcurrent') | int(13) }}"
+          en_forcage: "{{ states('input_select.evmodename') == '100%' }}"
+          suivant: >-
+            {% if not en_forcage or actuel >= 12 %}6
+            {% elif actuel >= 10 %}12
+            {% elif actuel >= 8 %}10
+            {% else %}8{% endif %}
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.demande_recharge_hc
+      - action: script.wallbox_charge_amperes
+        data:
+          courant: "{{ suivant | int }}"
+
+automation:
+  # Au débranchement, on débloque le retour en Solaire pour la prochaine fois.
+  - id: wallbox_debloquer_solaire_debranchement
+    alias: "Wallbox – débloquer le retour Solaire au débranchement"
+    triggers:
+      - trigger: state
+        entity_id: binary_sensor.car_plugged_in
+        to: "off"
+    actions:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.wallbox_bloquer_retour_solaire

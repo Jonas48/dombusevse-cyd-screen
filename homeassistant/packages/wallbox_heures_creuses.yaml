@@ -1,0 +1,92 @@
+# =============================================================================
+#  packages/wallbox_heures_creuses.yaml : recharge en heures creuses (HC)
+#  Off-peak charging: the HC NUIT button sets input_boolean.demande_recharge_hc;
+#  charging starts at the off-peak start time and stops at its end.
+#
+#  Le bouton HC NUIT de l'écran active input_boolean.demande_recharge_hc. La
+#  charge démarre au début des HC (mode « 100% ») et s'arrête à la fin. La
+#  demande ne vaut que pour une nuit.
+#
+#  Entités externes / external entities:
+#    sensor.car_battery_level, binary_sensor.car_plugged_in
+#    input_select.evmodename, input_button.evmodeset (paquet HA Creasol)
+# =============================================================================
+input_boolean:
+  demande_recharge_hc:
+    name: "Programmer recharge en Heures Creuses"
+    icon: mdi:weather-night
+
+input_datetime:
+  vehicule_hc_debut:
+    name: "Début heures creuses"
+    has_date: false
+    has_time: true
+    initial: "22:30:00"
+  vehicule_hc_fin:
+    name: "Fin heures creuses"
+    has_date: false
+    has_time: true
+    initial: "06:30:00"
+
+input_number:
+  # Seuil du ballon au-dessus duquel la voiture passe en priorité
+  # (packages/wallbox_priorite_ballon.yaml) / water-tank threshold
+  seuil_temperature_ce:
+    name: "Seuil ballon recharge voiture"
+    min: 40
+    max: 75
+    step: 1
+    unit_of_measurement: "°C"
+    icon: mdi:thermometer-water
+
+automation:
+  - id: wallbox_hc_demarrage
+    alias: "Voiture - Démarrage recharge Heures Creuses"
+    mode: single
+    triggers:
+      - trigger: time
+        at: input_datetime.vehicule_hc_debut
+      - trigger: state
+        entity_id: input_boolean.demande_recharge_hc
+        to: "on"
+    conditions:
+      - condition: state
+        entity_id: input_boolean.demande_recharge_hc
+        state: "on"
+      - condition: numeric_state
+        entity_id: sensor.car_battery_level
+        below: 95
+      - condition: state
+        entity_id: binary_sensor.car_plugged_in
+        state: "on"
+      - condition: time
+        after: input_datetime.vehicule_hc_debut
+        before: input_datetime.vehicule_hc_fin
+    actions:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.evmodename
+        data:
+          option: "100%"
+      - action: input_button.press
+        target:
+          entity_id: input_button.evmodeset
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.demande_recharge_hc
+
+  - id: wallbox_hc_fin
+    alias: "Voiture - Fin recharge Heures Creuses"
+    mode: single
+    triggers:
+      - trigger: time
+        at: input_datetime.vehicule_hc_fin
+    actions:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.evmodename
+        data:
+          option: "Arrêt"
+      - action: input_button.press
+        target:
+          entity_id: input_button.evmodeset

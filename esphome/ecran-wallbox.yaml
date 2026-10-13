@@ -1,0 +1,662 @@
+# =============================================================================
+#  Écran de pilotage de la wallbox — ESP32 "CYD" ESP32-2432S028 (version 2 USB)
+#  Écran 2,8" 320x240 (ILI9341) + tactile résistif XPT2046 + LED RGB.
+#  CRÉÉ le 03/10. Aucune logique ici : l'écran affiche les états de HA et
+#  appelle les scripts du package HA "ecran_wallbox.yaml".
+#
+#  IMPORTANT après le 1er ajout dans HA : Paramètres > Appareils et services >
+#  ESPHome > ecran-wallbox > Configurer > cocher "Autoriser l'appareil à
+#  effectuer des actions Home Assistant", sinon les boutons ne font rien.
+# =============================================================================
+# --- Entités Home Assistant utilisées (à adapter à votre installation) ---
+# HA entities used by the screen (adapt to your installation)
+substitutions:
+  solar_power: "sensor.solar_power"
+  car_battery: "sensor.car_battery_level"
+  charging_power: "sensor.evse_charging_power"
+  solar_share: "sensor.evse_solar_share"
+  charging_current: "sensor.evse_charging_current"
+  evse_mode: "input_select.evmodename"
+  evse_state: "input_select.evstatename"
+  evse_max_current: "input_number.evmaxcurrent"
+  offpeak_request: "input_boolean.demande_recharge_hc"
+
+esphome:
+  name: ecran-wallbox
+  friendly_name: Écran Wallbox
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+  on_client_connected:
+    - script.execute: maj
+  on_client_disconnected:
+    - lvgl.label.update:
+        id: lbl_mode
+        text: "HA déconnecté"
+    - lvgl.widget.update:
+        id: lbl_mode
+        text_color: 0x9E9E9E
+
+ota:
+  - platform: esphome
+    encryption:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Ecran-Wallbox Secours"
+    password: !secret fallback_ap_password
+
+captive_portal:
+
+# --- Bus SPI : écran et tactile sont sur deux bus séparés sur le CYD --------
+spi:
+  - id: spi_ecran
+    clk_pin: GPIO14
+    mosi_pin: GPIO13
+    miso_pin: GPIO12
+  - id: spi_tactile
+    clk_pin: GPIO25
+    mosi_pin: GPIO32
+    miso_pin: GPIO39
+
+# --- Rétroéclairage et LED RGB (la LED est câblée à l'envers : inverted) ----
+output:
+  - platform: ledc
+    id: out_retro
+    pin: GPIO21
+  - platform: ledc
+    id: out_r
+    pin: GPIO4
+    inverted: true
+  - platform: ledc
+    id: out_g
+    pin: GPIO16
+    inverted: true
+  - platform: ledc
+    id: out_b
+    pin: GPIO17
+    inverted: true
+
+light:
+  - platform: monochromatic
+    id: retro
+    name: "Rétroéclairage"
+    output: out_retro
+    restore_mode: ALWAYS_ON
+    default_transition_length: 300ms
+  - platform: rgb
+    id: led
+    name: "LED"
+    red: out_r
+    green: out_g
+    blue: out_b
+    restore_mode: ALWAYS_OFF
+    default_transition_length: 0s
+
+# --- Écran -------------------------------------------------------------------
+# Si les couleurs sont "négatives" (fond blanc), passer invert_colors à true.
+# Si l'image est à l'envers ou en miroir, jouer sur mirror_x / mirror_y.
+display:
+  - platform: ili9xxx
+    id: ecran
+    spi_id: spi_ecran
+    # Testé le 03/10 : ce CYD 2 USB a en fait un ILI9341 (ST7789V = écran blanc)
+    model: ILI9341
+    cs_pin: GPIO15
+    dc_pin: GPIO2
+    invert_colors: false
+    dimensions:
+      width: 320
+      height: 240
+    transform:
+      swap_xy: true
+      mirror_x: false
+      mirror_y: false
+    auto_clear_enabled: false
+    update_interval: never
+
+# --- Tactile -----------------------------------------------------------------
+# Si les appuis tombent à côté des boutons : ajuster la calibration (le
+# journal ESPHome affiche les valeurs brutes x/y à chaque appui).
+touchscreen:
+  - platform: xpt2046
+    id: tactile
+    spi_id: spi_tactile
+    cs_pin: GPIO33
+    interrupt_pin: GPIO36
+    update_interval: 50ms
+    threshold: 400
+    calibration:
+      x_min: 280
+      x_max: 3860
+      y_min: 340
+      y_max: 3860
+    transform:
+      swap_xy: true
+      mirror_x: false
+      mirror_y: false
+    # Écran atténué : le 1er appui rallume seulement (aucun bouton déclenché)
+    on_touch:
+      - if:
+          condition:
+            lambda: return id(ecran_attenue);
+          then:
+            - script.execute: reveil
+
+# --- Polices (avec accents) --------------------------------------------------
+font:
+  - file: "gfonts://Roboto@700"
+    id: f_titre
+    size: 26
+    glyphsets: [GF_Latin_Core]
+    extras:
+      - file: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
+        glyphs: ["\U000F0079", "\U000F007A", "\U000F007B", "\U000F007C", "\U000F007D", "\U000F007E", "\U000F007F", "\U000F0080", "\U000F0081", "\U000F0082", "\U000F0085", "\U000F0086", "\U000F0087", "\U000F0088", "\U000F0089", "\U000F008A", "\U000F008B", "\U000F008E", "\U000F089C", "\U000F089D", "\U000F089E", "\U000F0B6C"]
+  - file: "gfonts://Roboto"
+    id: f_info
+    size: 18
+    glyphsets: [GF_Latin_Core]
+    # AJOUTÉ le 08/10 : pictogramme soleil (Material Design Icons)
+    extras:
+      - file: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
+        glyphs: ["\U000F05A8"]
+  # AJOUTÉ le 08/10 : pictogrammes de l'état de la borne (Material Design Icons)
+  #   F06A6 prise débranchée · F06A5 prise branchée · F0241 éclair (charge)
+  #   F0210 ventilateur · F0026 alerte · F0667 arrêt
+  - file: "https://cdn.jsdelivr.net/npm/@mdi/font@7.4.47/fonts/materialdesignicons-webfont.ttf"
+    id: f_icone
+    size: 26
+    glyphs: ["\U000F06A6", "\U000F06A5", "\U000F0241", "\U000F0210", "\U000F0026", "\U000F0667"]
+  - file: "gfonts://Roboto@700"
+    id: f_bouton
+    size: 20
+    glyphsets: [GF_Latin_Core]
+
+# --- Données lues dans Home Assistant ---------------------------------------
+text_sensor:
+  - platform: homeassistant
+    id: ha_mode
+    entity_id: ${evse_mode}
+    on_value: {script.execute: maj}
+  - platform: homeassistant
+    id: ha_etat
+    entity_id: ${evse_state}
+    on_value: {script.execute: maj}
+
+sensor:
+  - platform: homeassistant
+    id: ha_puissance
+    entity_id: ${charging_power}
+    on_value: {script.execute: maj}
+  - platform: homeassistant
+    id: ha_part_solaire
+    entity_id: ${solar_share}
+    on_value: {script.execute: maj}
+  - platform: homeassistant
+    id: ha_batterie
+    entity_id: ${car_battery}
+    on_value: {script.execute: maj}
+  # AJOUTÉ le 08/10 : courant de charge réel (0 A hors charge)
+  - platform: homeassistant
+    id: ha_courant
+    entity_id: ${charging_current}
+    on_value: {script.execute: maj}
+  # AJOUTÉ le 08/10 : production solaire instantanée (ECU APsystems)
+  - platform: homeassistant
+    id: ha_solaire
+    entity_id: ${solar_power}
+    on_value: {script.execute: maj}
+  - platform: homeassistant
+    id: ha_courant_max
+    entity_id: ${evse_max_current}
+    on_value: {script.execute: maj}
+
+binary_sensor:
+  - platform: homeassistant
+    id: ha_hc
+    entity_id: ${offpeak_request}
+    on_state: {script.execute: maj}
+
+# Heure donnée par Home Assistant
+time:
+  - platform: homeassistant
+    id: ha_time
+
+# 0 = Arrêt, 1 = Solaire, 2 = HC programmée, 3 = Forçage
+globals:
+  - id: mode_code
+    type: int
+    initial_value: "0"
+  # Chrono de charge (secondes) : avance pendant la charge, se fige quand la
+  # charge s'interrompt (nuage, fin de charge...), revient à 0 au débranchement.
+  # Conservé si l'écran redémarre.
+  - id: charge_secondes
+    type: int
+    restore_value: true
+    initial_value: "0"
+  # Énergie reçue par la voiture depuis le branchement (Wh), même logique
+  - id: energie_session_wh
+    type: float
+    restore_value: true
+    initial_value: "0"
+  # Vrai quand le rétroéclairage est réduit (veille)
+  - id: ecran_attenue
+    type: bool
+    initial_value: "false"
+
+# Chrono et horloge, rafraîchis chaque seconde
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          std::string e = id(ha_etat).state;
+          if (e == "Déconnecté") {
+            id(charge_secondes) = 0;
+            id(energie_session_wh) = 0;
+          } else if (e == "En charge" || e == "En charge + ventilation") {
+            id(charge_secondes) += 1;
+            float p = id(ha_puissance).state;
+            if (!isnan(p) && p > 0) id(energie_session_wh) += p / 3600.0f;
+          }
+      - lvgl.label.update:
+          id: lbl_chrono
+          text: !lambda |-
+            std::string e = id(ha_etat).state;
+            bool en_charge = (e == "En charge" || e == "En charge + ventilation");
+            int s = id(charge_secondes);
+            if (s == 0 && !en_charge) return std::string("Charge : --");
+            return str_sprintf("%s : %d:%02d:%02d · %.1f kWh", en_charge ? "Charge" : "Pause",
+                               s / 3600, (s % 3600) / 60, s % 60, id(energie_session_wh) / 1000.0f);
+      - lvgl.widget.update:
+          id: lbl_chrono
+          text_color: !lambda |-
+            std::string e = id(ha_etat).state;
+            bool en_charge = (e == "En charge" || e == "En charge + ventilation");
+            return en_charge ? lv_color_hex(0x66BB6A) : lv_color_hex(0x9E9E9E);
+      # La nuit, un écran déjà atténué en journée descend au niveau nuit
+      - if:
+          condition:
+            lambda: |-
+              auto t = id(ha_time).now();
+              return id(ecran_attenue) && t.is_valid() && (t.hour >= 22 || t.hour < 7)
+                     && id(retro).current_values.get_brightness() > 0.06f;
+          then:
+            - light.turn_on: {id: retro, brightness: 5%}
+      - lvgl.label.update:
+          id: lbl_heure
+          text: !lambda |-
+            auto t = id(ha_time).now();
+            if (!t.is_valid()) return std::string("--:--");
+            return t.strftime("%H:%M");
+
+# --- Mise à jour de l'affichage ----------------------------------------------
+script:
+  # Rallume l'écran ; les boutons restent inactifs 0,5 s pour ignorer cet appui
+  - id: reveil
+    mode: restart
+    then:
+      - light.turn_on: {id: retro, brightness: 100%}
+      - delay: 500ms
+      - globals.set: {id: ecran_attenue, value: "false"}
+  # Appui court sur un bouton : rappelle qu'il faut maintenir 2 s.
+  # MODIFIÉ le 09/10 : valable pour les 4 boutons (0 STOP, 1 SOLAIRE,
+  # 2 HC, 3 FORCER) ; maj remet ensuite les textes de HC et FORCER.
+  - id: maintenir_info
+    mode: restart
+    parameters:
+      bouton: int
+    then:
+      - if:
+          condition: {lambda: "return bouton == 0;"}
+          then: [lvgl.label.update: {id: lbl_stop, text: "MAINTENIR"}]
+      - if:
+          condition: {lambda: "return bouton == 1;"}
+          then: [lvgl.label.update: {id: lbl_solaire, text: "MAINTENIR"}]
+      - if:
+          condition: {lambda: "return bouton == 2;"}
+          then: [lvgl.label.update: {id: lbl_hc, text: "MAINTENIR"}]
+      - if:
+          condition: {lambda: "return bouton == 3;"}
+          then: [lvgl.label.update: {id: lbl_forcer, text: "MAINTENIR"}]
+      - delay: 2s
+      - lvgl.label.update: {id: lbl_stop, text: "STOP"}
+      - lvgl.label.update: {id: lbl_solaire, text: "SOLAIRE"}
+      - script.execute: maj
+  - id: maj
+    mode: restart
+    then:
+      - lambda: |-
+          std::string m = id(ha_mode).state;
+          if (id(ha_hc).state && m != "100%") id(mode_code) = 2;
+          else if (m == "100%") id(mode_code) = 3;
+          else if (m == "Solaire") id(mode_code) = 1;
+          else id(mode_code) = 0;
+      - lvgl.label.update:
+          id: lbl_mode
+          text: !lambda |-
+            switch (id(mode_code)) {
+              // MODIFIÉ le 08/10 : intensité réelle affichée pendant la charge,
+              // « HC NUIT » au lieu de « HC PROGRAMMÉE » (trop long).
+              case 1:
+                if (!isnan(id(ha_courant).state) && id(ha_courant).state >= 1)
+                  return str_sprintf("SOLAIRE %d A", (int) lroundf(id(ha_courant).state));
+                return std::string("SOLAIRE");
+              case 2:
+                if (!isnan(id(ha_courant).state) && id(ha_courant).state >= 1)
+                  return str_sprintf("HC NUIT %d A", (int) lroundf(id(ha_courant).state));
+                return std::string("HC NUIT");
+              case 3: return str_sprintf("FORÇAGE %d A", (int) id(ha_courant_max).state);
+              default: return std::string("ARRÊT");
+            }
+      - lvgl.widget.update:
+          id: lbl_mode
+          text_color: !lambda |-
+            switch (id(mode_code)) {
+              case 1: return lv_color_hex(0xFFC107);
+              case 2: return lv_color_hex(0x42A5F5);
+              case 3: return lv_color_hex(0xFF7043);
+              default: return lv_color_hex(0xEF5350);
+            }
+      # MODIFIÉ le 08/10 : pictogramme voiture + % en grand, couleur selon le
+      # niveau (rouge < 20, orange < 50, jaune < 80, vert au-delà)
+      - lvgl.label.update:
+          id: lbl_batterie
+          text: !lambda |-
+            if (isnan(id(ha_batterie).state)) return std::string("\U000F0B6C --");
+            return str_sprintf("\U000F0B6C %d %%", (int) id(ha_batterie).state);
+          text_color: !lambda |-
+            float b = id(ha_batterie).state;
+            if (isnan(b)) return lv_color_hex(0x78909C);
+            if (b < 20) return lv_color_hex(0xE53935);
+            if (b < 50) return lv_color_hex(0xFB8C00);
+            if (b < 80) return lv_color_hex(0xFDD835);
+            return lv_color_hex(0x43A047);
+      # MODIFIÉ le 08/10 : l'état est un pictogramme coloré ; le texte ne reste
+      # que pour la charge (puissance, part solaire) et les alarmes.
+      - lvgl.label.update:
+          id: lbl_etat_icone
+          text: !lambda |-
+            std::string e = id(ha_etat).state;
+            if (e == "Déconnecté") return std::string("\U000F06A6");
+            if (e == "Connecté") return std::string("\U000F06A5");
+            if (e == "En charge") return std::string("\U000F0241");
+            if (e == "En charge + ventilation") return std::string("\U000F0210");
+            if (e == "Arrêt") return std::string("\U000F0667");
+            return std::string("\U000F0026");
+          text_color: !lambda |-
+            std::string e = id(ha_etat).state;
+            if (e == "Déconnecté" || e == "Arrêt") return lv_color_hex(0x78909C);
+            if (e == "Connecté") return lv_color_hex(0x42A5F5);
+            if (e.rfind("En charge", 0) == 0) return lv_color_hex(0x66BB6A);
+            return lv_color_hex(0xEF5350);
+      - lvgl.label.update:
+          id: lbl_etat
+          text: !lambda |-
+            std::string e = id(ha_etat).state;
+            float p = id(ha_puissance).state;
+            if (e.rfind("Alarme", 0) == 0) return e;
+            if (!isnan(p) && p > 50)
+              return str_sprintf("%.1f kW · %d %% solaire", p / 1000.0f,
+                                 isnan(id(ha_part_solaire).state) ? 0 : (int) id(ha_part_solaire).state);
+            if (e == "Déconnecté") return std::string("débranchée");
+            if (e == "Connecté") return std::string("branchée");
+            return std::string("");
+      - lvgl.label.update:
+          id: lbl_soleil
+          text: !lambda |-
+            float s = id(ha_solaire).state;
+            if (isnan(s)) return std::string("\U000F05A8 --");
+            if (s < 1000) return str_sprintf("\U000F05A8 %d W", (int) s);
+            return str_sprintf("\U000F05A8 %.1f kW", s / 1000.0f);
+          text_color: !lambda |-
+            float s = id(ha_solaire).state;
+            return (!isnan(s) && s > 50) ? lv_color_hex(0xFFC107) : lv_color_hex(0x78909C);
+      - lvgl.label.update:
+          id: lbl_forcer
+          text: !lambda |-
+            if (id(mode_code) == 3) {
+              int a = (int) id(ha_courant_max).state;
+              int n = a >= 12 ? 6 : (a >= 10 ? 12 : (a >= 8 ? 10 : 8));
+              return str_sprintf("FORCER %d A", n);
+            }
+            return std::string("FORCER 6 A");
+      - lvgl.label.update:
+          id: lbl_hc
+          text: !lambda |-
+            return std::string(id(mode_code) == 2 ? "ANNULER HC" : "HC NUIT");
+      # Bouton du mode actif mis en évidence (bordure blanche)
+      - lvgl.widget.update:
+          id: btn_solaire
+          border_width: !lambda "return id(mode_code) == 1 ? 3 : 0;"
+      - lvgl.widget.update:
+          id: btn_hc
+          border_width: !lambda "return id(mode_code) == 2 ? 3 : 0;"
+      - lvgl.widget.update:
+          id: btn_forcer
+          border_width: !lambda "return id(mode_code) == 3 ? 3 : 0;"
+      - lvgl.widget.update:
+          id: btn_stop
+          border_width: !lambda "return id(mode_code) == 0 ? 3 : 0;"
+      # LED : vert = Solaire, bleu = HC, orange = forçage, rouge faible = arrêt
+      - light.turn_on:
+          id: led
+          brightness: 40%
+          red: !lambda "return id(mode_code) == 3 ? 1.0 : (id(mode_code) == 0 ? 1.0 : 0.0);"
+          green: !lambda "return id(mode_code) == 1 ? 1.0 : (id(mode_code) == 3 ? 0.35 : 0.0);"
+          blue: !lambda "return id(mode_code) == 2 ? 1.0 : 0.0;"
+
+# --- Interface graphique -----------------------------------------------------
+lvgl:
+  displays: [ecran]
+  touchscreens:
+    - touchscreen_id: tactile
+      # MODIFIÉ le 09/10 : les 4 boutons demandent un appui de 2 secondes
+      # (évite les appuis involontaires) ; un appui court affiche MAINTENIR
+      long_press_time: 2000ms
+  buffer_size: 25%
+  # Veille de l'écran après 60 s sans appui (rallumé au premier toucher)
+  # Veille : jamais éteint. Nuit (22h-7h) : 5 % après 60 s.
+  # Jour : 30 % après 5 min. Un appui rallume (sans déclencher de bouton).
+  on_idle:
+    - timeout: 60s
+      then:
+        - if:
+            condition:
+              lambda: |-
+                auto t = id(ha_time).now();
+                return t.is_valid() && (t.hour >= 22 || t.hour < 7);
+            then:
+              - globals.set: {id: ecran_attenue, value: "true"}
+              - light.turn_on: {id: retro, brightness: 5%}
+    - timeout: 300s
+      then:
+        - if:
+            condition:
+              lambda: |-
+                auto t = id(ha_time).now();
+                return !t.is_valid() || (t.hour >= 7 && t.hour < 22);
+            then:
+              - globals.set: {id: ecran_attenue, value: "true"}
+              - light.turn_on: {id: retro, brightness: 30%}
+  style_definitions:
+    - id: style_bouton
+      radius: 10
+      border_color: 0xFFFFFF
+      border_width: 0
+      text_color: 0xFFFFFF
+      text_font: f_bouton
+  pages:
+    - id: page_principale
+      bg_color: 0x12161C
+      widgets:
+        - label:
+            id: lbl_mode
+            x: 10
+            y: 8
+            text: "…"
+            text_font: f_titre
+            text_color: 0xFFFFFF
+        - label:
+            id: lbl_batterie
+            align: TOP_RIGHT
+            x: -10
+            y: 8
+            text: "\U000F0B6C --"
+            text_font: f_titre
+            text_color: 0xB0BEC5
+        # Ligne d'état : pictogramme (borne) + détail à gauche, soleil à droite
+        - label:
+            id: lbl_etat_icone
+            x: 8
+            y: 43
+            text: "\U000F0026"
+            text_font: f_icone
+            text_color: 0x78909C
+        - label:
+            id: lbl_etat
+            x: 42
+            y: 48
+            width: 175
+            long_mode: CLIP
+            text: "…"
+            text_font: f_info
+            text_color: 0xECEFF1
+        - label:
+            id: lbl_soleil
+            align: TOP_RIGHT
+            x: -10
+            y: 48
+            text: "\U000F05A8 --"
+            text_font: f_info
+            text_color: 0x78909C
+        # Chrono de charge (à gauche) et heure (à droite)
+        - label:
+            id: lbl_chrono
+            x: 10
+            y: 78
+            text: "Charge : --"
+            text_font: f_info
+            text_color: 0x9E9E9E
+        - label:
+            id: lbl_heure
+            align: TOP_RIGHT
+            x: -10
+            y: 78
+            text: "--:--"
+            text_font: f_info
+            text_color: 0xB0BEC5
+        - button:
+            id: btn_stop
+            x: 4
+            y: 112
+            width: 154
+            height: 60
+            styles: style_bouton
+            bg_color: 0xC62828
+            widgets:
+              - label:
+                  align: CENTER
+                  id: lbl_stop
+                  text: "STOP"
+            # Appui long (2 s) obligatoire ; un appui court affiche « MAINTENIR »
+            on_long_press:
+              - if:
+                  condition:
+                    lambda: return !id(ecran_attenue);
+                  then:
+                    - homeassistant.action:
+                        action: script.wallbox_stop
+            on_short_click:
+              - if:
+                  condition:
+                    lambda: return !id(ecran_attenue);
+                  then:
+                    - script.execute: {id: maintenir_info, bouton: 0}
+        - button:
+            id: btn_solaire
+            x: 162
+            y: 112
+            width: 154
+            height: 60
+            styles: style_bouton
+            bg_color: 0xF9A825
+            widgets:
+              - label:
+                  id: lbl_solaire
+                  align: CENTER
+                  text: "SOLAIRE"
+            on_long_press:
+              - if:
+                  condition:
+                    lambda: return !id(ecran_attenue);
+                  then:
+                    - homeassistant.action:
+                        action: script.wallbox_mode_solaire
+            on_short_click:
+              - if:
+                  condition:
+                    lambda: return !id(ecran_attenue);
+                  then:
+                    - script.execute: {id: maintenir_info, bouton: 1}
+        - button:
+            id: btn_hc
+            x: 4
+            y: 176
+            width: 154
+            height: 60
+            styles: style_bouton
+            bg_color: 0x1565C0
+            widgets:
+              - label:
+                  id: lbl_hc
+                  align: CENTER
+                  text: "HC NUIT"
+            on_long_press:
+              - if:
+                  condition:
+                    lambda: return !id(ecran_attenue);
+                  then:
+                    - homeassistant.action:
+                        action: script.wallbox_basculer_hc
+            on_short_click:
+              - if:
+                  condition:
+                    lambda: return !id(ecran_attenue);
+                  then:
+                    - script.execute: {id: maintenir_info, bouton: 2}
+        - button:
+            id: btn_forcer
+            x: 162
+            y: 176
+            width: 154
+            height: 60
+            styles: style_bouton
+            bg_color: 0xE64A19
+            widgets:
+              - label:
+                  id: lbl_forcer
+                  align: CENTER
+                  text: "FORCER 6 A"
+            on_long_press:
+              - if:
+                  condition:
+                    lambda: return !id(ecran_attenue);
+                  then:
+                    - homeassistant.action:
+                        action: script.wallbox_forcer_suivant
+            on_short_click:
+              - if:
+                  condition:
+                    lambda: return !id(ecran_attenue);
+                  then:
+                    - script.execute: {id: maintenir_info, bouton: 3}
